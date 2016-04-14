@@ -2,14 +2,16 @@ from __future__ import (print_function)
 import numpy as np
 from scipy import special
 from astropy import units as u, constants as const
-
-from ..filters import sdss_filters
+from astropy.convolution import convolve
 
 __all__ = ['make_fringe_pattern']
 
+@u.quantity_input(moon_distance=u.km)
 @u.quantity_input(vmoon=u.km/u.s)
-def make_fringe_pattern(vmoon):
-    """Compute the diffraction pattern from Lunar occultation by a point source
+@u.quantity_input(frame_rate=u.ms)
+def make_fringe_pattern(moon_distance, vmoon, filt, source=None, telescope=None,
+                        nelem=2400):
+    """Compute the diffraction pattern from Lunar occultation by a given source.
     
     The normalised diffraction pattern of a point source from a Lunar occulation
     is given by 
@@ -20,12 +22,28 @@ def make_fringe_pattern(vmoon):
         
     where :math:`x` is the distance from the Moon's shadow limb, :math:`D` is the
     Lunar distance and :math:`\lambda` is the wavelength of observation.
+    
+    For finite sources and telescopes, this point source diffraction pattern needs
+    to be convolved with a 1D kernel. This 1D Kernel should be the chord the lunar
+    limb makes through telescope aperture, or the projection of the sources intensity
+    distribution from the lunar limb to the Earth 
+    (see http://spiff.rit.edu/richmond/occult/bessel/bessel.html for more details).
+
         
     Parameters
     -----------
+    moon_distance: ~astropy.units.Quantity
+        Distance of Moon at time of occultation
     vmoon :  ~astropy.units.Quantity
         Speed of lunar shadow, in km/second or equivalent units.
-        
+    filt: ~occult.filter
+        A Filter object representing the filter of observation
+    source : ~occult.model.aperture.Aperture
+        An Aperture object representing the occulted source
+    telescope : ~occult.model.aperture.Aperture
+        An Source object representing the occulted source
+    nelem : integer
+        Number of points to calculate, default=2400
     Returns
     --------
     time : ~astropy.units.Quantity
@@ -33,21 +51,10 @@ def make_fringe_pattern(vmoon):
     flux : np.ndarray
         Normalised flux from star
     """
-    
-    # moon distance
-    # TODO: use time of occultation and jplehem to calculate actual moon distance
-    moon_distance = 3.8e8 * u.m
-    
-    # number of points to calculate
-    # TODO: improve to calculate at give time resolution with subdivision of bins
-    nelem = 2400
-    
     # number of wavelngths to calculate
     nwav = 200
     
     # Filter qualities (SDSS g')
-    # TODO: pass in a filter object
-    filt = sdss_filters['g']
     filter_start = filt.pivot - filt.fwhm/2
     filter_end   = filt.pivot + filt.fwhm/2
     wavelengths = u.AA*np.linspace(filter_start, filter_end, nwav)
@@ -81,8 +88,21 @@ def make_fringe_pattern(vmoon):
     # each row of F contains the diffraction pattern for a single wavelength.
     # Add these together and normalise
     F = F.sum(axis=0)
-    F /= F.max()
     
+    # Now convolve with 1D Kernel from Source
+    if source is not None:
+        source.project(moon_distance)
+        kernel = source.evaluate_1d_kernel(x)
+        F = convolve(F, kernel, boundary='extend')
+    
+    # and telescope aperture
+    if telescope is not None:
+        kernel = telescope.evaluate_1d_kernel(x)
+        F = convolve(F, kernel, boundary='extend')
+        
+    #normalise
+    F /= F[-100:].mean()   
     return time, F
  
+
        
